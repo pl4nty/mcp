@@ -1,18 +1,16 @@
-"""Outlook MCP server.
+"""MCP server for Outlook email and calendar via Microsoft Graph.
 
-Starts a FastMCP server with Streamable HTTP transport and a simple OAuth 2.1
-Authorization Server that accepts pre-configured client credentials from Claude.
+Starts a FastMCP server with Streamable HTTP transport and OAuth 2.1 support
+including Dynamic Client Registration (DCR) as required by Claude.
 Microsoft Graph access uses DefaultAzureCredential.
 
 Environment variables
 ---------------------
-MCP_CLIENT_ID      : OAuth client ID Claude uses to authenticate with this server
-MCP_CLIENT_SECRET  : OAuth client secret Claude uses to authenticate with this server
-GRAPH_USER         : Microsoft 365 user ID or UPN whose data to access
-                     (e.g. user@example.com)
-SERVER_URL         : Public URL of this server (default: http://localhost:8000)
-HOST               : Bind host (default: 0.0.0.0)
-PORT               : Bind port (default: 8000)
+GRAPH_USER  : Microsoft 365 user ID or UPN whose data to access
+              (e.g. user@example.com)
+SERVER_URL  : Public URL of this server (default: http://localhost:8000)
+HOST        : Bind host (default: 0.0.0.0)
+PORT        : Bind port (default: 8000)
 
 Graph API authentication uses DefaultAzureCredential. Configure one of:
   - AZURE_CLIENT_ID + AZURE_TENANT_ID + AZURE_CLIENT_SECRET (service principal)
@@ -27,7 +25,7 @@ import time
 from azure.identity.aio import DefaultAzureCredential
 from dotenv import load_dotenv
 from msgraph_beta import GraphServiceClient
-from pydantic import AnyHttpUrl, AnyUrl
+from pydantic import AnyHttpUrl
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -35,15 +33,14 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     OAuthAuthorizationServerProvider,
     RefreshToken,
-    RegistrationError,
     construct_redirect_uri,
 )
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-from outlook_mcp.tools.calendar import register_calendar_tools
-from outlook_mcp.tools.mail import register_mail_tools
+from outlook.calendar import register_calendar_tools
+from outlook.mail import register_mail_tools
 
 load_dotenv()
 
@@ -52,34 +49,27 @@ logger = logging.getLogger(__name__)
 _MCP_SCOPES = ["mail.read", "calendar.read"]
 
 
-class _StaticOAuthProvider(
+class _OAuthProvider(
     OAuthAuthorizationServerProvider[AuthorizationCode, RefreshToken, AccessToken]
 ):
-    """OAuth AS with one pre-registered client. No dynamic client registration.
+    """OAuth AS with Dynamic Client Registration and in-memory token store.
 
-    Issues authorization codes immediately; Graph access is handled separately
+    Clients (e.g. Claude) register via POST /register, then perform the
+    standard authorization code flow. Graph access is handled separately
     via DefaultAzureCredential.
     """
 
-    def __init__(self, client_id: str, client_secret: str) -> None:
-        self._client = OAuthClientInformationFull(
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uris=[AnyUrl("https://claude.ai/api/mcp/auth_callback")],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-        )
+    def __init__(self) -> None:
+        self._clients: dict[str, OAuthClientInformationFull] = {}
         self._auth_codes: dict[str, AuthorizationCode] = {}
         self._access_tokens: dict[str, AccessToken] = {}
         self._refresh_tokens: dict[str, RefreshToken] = {}
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self._client if client_id == self._client.client_id else None
+        return self._clients.get(client_id)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        raise RegistrationError(
-            "invalid_client_metadata", "Dynamic client registration is disabled"
-        )
+        self._clients[client_info.client_id] = client_info
 
     async def authorize(
         self, client: OAuthClientInformationFull, params: AuthorizationParams
@@ -184,24 +174,17 @@ class _StaticOAuthProvider(
         )
 
 
-_mcp_client_id = os.environ.get("MCP_CLIENT_ID", "")
-_mcp_client_secret = os.environ.get("MCP_CLIENT_SECRET", "")
 _server_url = os.environ.get("SERVER_URL", "http://localhost:8000").rstrip("/")
 _host = os.environ.get("HOST", "0.0.0.0")
 _port = int(os.environ.get("PORT", "8000"))
 _graph_user = os.environ.get("GRAPH_USER", "")
 
-if not all([_mcp_client_id, _mcp_client_secret]):
-    logger.warning("MCP_CLIENT_ID and MCP_CLIENT_SECRET must be set.")
 if not _graph_user:
     logger.warning("GRAPH_USER must be set to a Microsoft 365 user ID or UPN.")
 
 _graph_client = GraphServiceClient(credentials=DefaultAzureCredential())
 
-provider = _StaticOAuthProvider(
-    client_id=_mcp_client_id,
-    client_secret=_mcp_client_secret,
-)
+provider = _OAuthProvider()
 
 mcp = FastMCP(
     name="Outlook MCP",
@@ -214,7 +197,7 @@ mcp = FastMCP(
         issuer_url=AnyHttpUrl(_server_url),
         resource_server_url=None,
         client_registration_options=ClientRegistrationOptions(
-            enabled=False,
+            enabled=True,
             valid_scopes=_MCP_SCOPES,
             default_scopes=_MCP_SCOPES,
         ),
@@ -229,7 +212,7 @@ register_calendar_tools(mcp, _graph_client, _graph_user)
 
 
 def main() -> None:
-    """Run the Outlook MCP server with Streamable HTTP transport."""
+    """Run the MCP server with Streamable HTTP transport."""
     mcp.run(transport="streamable-http")
 
 

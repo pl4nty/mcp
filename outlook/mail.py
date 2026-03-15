@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import re
-from typing import Any
 
 from kiota_abstractions.api_error import APIError
 from kiota_abstractions.base_request_configuration import RequestConfiguration
+from kiota_abstractions.serialization import Parsable
+from kiota_serialization_json.json_serialization_writer_factory import (
+    JsonSerializationWriterFactory,
+)
 from msgraph_beta import GraphServiceClient
 from msgraph_beta.generated.users.item.mail_folders.item.messages.messages_request_builder import (
     MessagesRequestBuilder as FolderMessagesRequestBuilder,
@@ -21,12 +25,21 @@ _ISO8601_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
 
+_KIOTA_FACTORY = JsonSerializationWriterFactory()
+
+
+def _to_dict(obj: Parsable) -> dict:
+    """Serialize a Kiota Parsable object to a plain dict using Kiota's own serialization."""
+    writer = _KIOTA_FACTORY.get_serialization_writer("application/json")
+    obj.serialize(writer)
+    return json.loads(writer.get_serialized_content())
+
 
 def _validate_datetime(value: str, param_name: str) -> None:
     if not _ISO8601_RE.match(value):
         raise ValueError(
             f"{param_name} must be an ISO 8601 datetime string "
-            "(e.g. '2025-01-01T00:00:00Z'), got: {value!r}"
+            f"(e.g. '2025-01-01T00:00:00Z'), got: {value!r}"
         )
 
 
@@ -39,7 +52,7 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
     async def search_emails(
         query: str,
         max_results: int = 10,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         """Search emails in the user's Outlook mailbox.
 
         Args:
@@ -61,17 +74,7 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
         except APIError as exc:
             raise RuntimeError(f"Graph API error: {exc.message}") from exc
 
-        return [
-            {
-                "id": m.id,
-                "subject": m.subject,
-                "from": m.from_.email_address.address if m.from_ and m.from_.email_address else None,
-                "receivedDateTime": m.received_date_time,
-                "isRead": m.is_read,
-                "bodyPreview": m.body_preview,
-            }
-            for m in (result.value or [])
-        ]
+        return [_to_dict(m) for m in (result.value or [])]
 
     @mcp.tool()
     async def list_emails(
@@ -80,7 +83,7 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
         only_unread: bool = False,
         start_datetime: str | None = None,
         end_datetime: str | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict]:
         """List emails from a mailbox folder.
 
         Args:
@@ -116,20 +119,10 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
         except APIError as exc:
             raise RuntimeError(f"Graph API error: {exc.message}") from exc
 
-        return [
-            {
-                "id": m.id,
-                "subject": m.subject,
-                "from": m.from_.email_address.address if m.from_ and m.from_.email_address else None,
-                "receivedDateTime": m.received_date_time,
-                "isRead": m.is_read,
-                "bodyPreview": m.body_preview,
-            }
-            for m in (result.value or [])
-        ]
+        return [_to_dict(m) for m in (result.value or [])]
 
     @mcp.tool()
-    async def read_email(email_id: str) -> dict[str, Any]:
+    async def read_email(email_id: str) -> dict:
         """Read the full content of a specific email.
 
         Args:
@@ -143,18 +136,4 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
         if message is None:
             raise RuntimeError(f"Email not found: {email_id!r}")
 
-        return {
-            "id": message.id,
-            "subject": message.subject,
-            "from": message.from_.email_address.address if message.from_ and message.from_.email_address else None,
-            "to": [r.email_address.address for r in (message.to_recipients or []) if r.email_address],
-            "cc": [r.email_address.address for r in (message.cc_recipients or []) if r.email_address],
-            "receivedDateTime": message.received_date_time,
-            "sentDateTime": message.sent_date_time,
-            "isRead": message.is_read,
-            "hasAttachments": message.has_attachments,
-            "importance": message.importance,
-            "bodyPreview": message.body_preview,
-            "body": message.body.content if message.body else None,
-            "bodyContentType": message.body.content_type if message.body else None,
-        }
+        return _to_dict(message)

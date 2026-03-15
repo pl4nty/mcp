@@ -1,1 +1,0 @@
-"""Outlook MCP server package."""
