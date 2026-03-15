@@ -10,12 +10,16 @@ A monorepo of remote MCP servers built with the [MCP Python SDK](https://github.
 
 ## Architecture
 
-Each server is a standalone Python package using [FastMCP](https://github.com/modelcontextprotocol/python-sdk) with Streamable HTTP transport. Authentication follows the OAuth 2.1 pattern required by Claude's custom connectors — each server acts as an OAuth Authorization Server that proxies user authentication to Microsoft Entra ID (formerly Azure AD), then issues its own tokens to the MCP client.
+Each server is a standalone Python package using [FastMCP](https://github.com/modelcontextprotocol/python-sdk) with Streamable HTTP transport. Authentication follows the OAuth 2.1 pattern required by Claude's custom connectors — each server acts as an OAuth Authorization Server with a pre-configured static client (no dynamic registration), and uses [DefaultAzureCredential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.aio.defaultazurecredential) to access Microsoft APIs.
 
 ## Running locally
 
 ```bash
-docker compose up
+cd servers/outlook
+docker build -t outlook-mcp .
+docker run -p 8000:8000 -e MCP_CLIENT_ID=... -e MCP_CLIENT_SECRET=... \
+  -e AZURE_TENANT_ID=... -e AZURE_CLIENT_ID=... -e AZURE_CLIENT_SECRET=... \
+  -e GRAPH_USER=user@example.com outlook-mcp
 ```
 
 The servers will be available at:

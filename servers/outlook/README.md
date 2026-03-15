@@ -4,71 +4,77 @@ A remote MCP server that provides tools for searching and reading Outlook emails
 
 ## Authentication
 
-Authentication uses OAuth 2.1 with Microsoft Entra ID (formerly Azure AD), proxied through this server so Claude's custom connector OAuth flow works seamlessly. The server acts as an OAuth Authorization Server for Claude, redirecting users to Microsoft's login for the actual authentication.
+Two independent credential pairs are needed:
 
-### Set up an Entra ID app registration
+### 1. Claude → MCP server (OAuth 2.1)
 
-1. Go to the [Azure Portal](https://portal.azure.com) → **Microsoft Entra ID** → **App registrations** → **New registration**
-2. Name: anything descriptive (e.g. `Outlook MCP`)
-3. Supported account types: **Accounts in any organizational directory and personal Microsoft accounts** (for outlook.com support)
-4. Redirect URI: **Web** → `https://your-server.example.com/oauth/callback` (or `http://localhost:8000/oauth/callback` for local dev)
-5. Click **Register**
-6. Note the **Application (client) ID** and **Directory (tenant) ID**
-7. Go to **Certificates & secrets** → **New client secret** → copy the secret value
-8. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**:
+Configure a static client ID and secret that Claude uses to authenticate:
+
+```env
+MCP_CLIENT_ID=your-mcp-client-id
+MCP_CLIENT_SECRET=your-mcp-client-secret
+```
+
+Choose any opaque values (e.g. generate a UUID for the ID and a long random string for the secret). Enter these same values when adding the connector in Claude.
+
+### 2. MCP server → Microsoft Graph (DefaultAzureCredential)
+
+Register an application in [Microsoft Entra ID](https://portal.azure.com) with **application** (not delegated) permissions:
+
+1. **App registrations** → **New registration**
+2. Note the **Application (client) ID** and **Directory (tenant) ID**
+3. **Certificates & secrets** → **New client secret** → copy the secret value
+4. **API permissions** → **Add a permission** → **Microsoft Graph** → **Application permissions**:
    - `Mail.Read`
    - `Calendars.Read`
-   - `User.Read`
-   - `offline_access`
-9. Click **Grant admin consent** (or let users consent individually)
+5. Click **Grant admin consent**
 
-### Configure environment variables
-
-Create a `.env` file in the repository root (or set environment variables):
+Set the following environment variables:
 
 ```env
-ENTRA_TENANT_ID=your-tenant-id
-ENTRA_CLIENT_ID=your-client-id
-ENTRA_CLIENT_SECRET=your-client-secret
-SERVER_URL=http://localhost:8000   # public-facing URL of this server
+AZURE_TENANT_ID=your-tenant-id
+AZURE_CLIENT_ID=your-app-client-id
+AZURE_CLIENT_SECRET=your-app-client-secret
+GRAPH_USER=user@example.com   # UPN or object ID of the mailbox/calendar to access
 ```
 
-For **personal Microsoft accounts (outlook.com)**, use `common` as the tenant ID:
-
-```env
-ENTRA_TENANT_ID=common
-```
+`DefaultAzureCredential` also supports Managed Identity, workload identity, and other Azure auth mechanisms — see the [azure-identity docs](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity?view=azure-python).
 
 ## Running
 
-### With Docker Compose (recommended)
-
-From the repository root:
-
-```bash
-docker compose up outlook
-```
-
-### Directly with uv
-
 ```bash
 cd servers/outlook
-uv run python -m outlook_mcp.server
+docker build -t outlook-mcp .
+docker run -p 8000:8000 \
+  -e MCP_CLIENT_ID=... \
+  -e MCP_CLIENT_SECRET=... \
+  -e AZURE_TENANT_ID=... \
+  -e AZURE_CLIENT_ID=... \
+  -e AZURE_CLIENT_SECRET=... \
+  -e GRAPH_USER=user@example.com \
+  -e SERVER_URL=http://localhost:8000 \
+  outlook-mcp
 ```
 
-## Available tools
+Or directly with uv:
 
-| Tool | Description |
-|------|-------------|
-| `search_emails` | Search emails using a query string (supports OData `$search` and `$filter`) |
-| `list_emails` | List recent emails from the inbox with optional filtering |
-| `read_email` | Read the full content of a specific email by ID |
-| `list_calendar_events` | List upcoming calendar events |
-| `search_calendar_events` | Search calendar events by subject or other criteria |
+```bash
+uv run python -m outlook_mcp.server
+```
 
 ## Adding to Claude
 
 1. Start the server (see above)
 2. In Claude → **Settings** → **Connectors** → **Add custom connector**
 3. Enter `http://localhost:8000/mcp` (or your deployed URL)
-4. Follow the OAuth flow to sign in with your Microsoft account
+4. When prompted, enter the `MCP_CLIENT_ID` and `MCP_CLIENT_SECRET` values you configured
+
+## Available tools
+
+| Tool | Description |
+|------|-------------|
+| `search_emails` | Search emails using a free-text query |
+| `list_emails` | List emails from a folder with optional filters (unread, date range) |
+| `read_email` | Read the full content of a specific email by ID |
+| `list_calendar_events` | List calendar events with optional date range filter |
+| `search_calendar_events` | Search calendar events by subject or body text |
