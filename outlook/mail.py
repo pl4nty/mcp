@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 
 from kiota_abstractions.api_error import APIError
 from kiota_abstractions.base_request_configuration import RequestConfiguration
@@ -43,10 +44,10 @@ def _validate_datetime(value: str, param_name: str) -> None:
         )
 
 
-def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) -> None:
+def register_mail_tools(
+    mcp: FastMCP, get_client: Callable[[], GraphServiceClient]
+) -> None:
     """Register all email-related MCP tools on *mcp*."""
-
-    user = client.users.by_user_id(user_id)
 
     @mcp.tool()
     async def search_emails(
@@ -61,8 +62,9 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
             max_results: Maximum number of emails to return (1–50, default 10).
         """
         max_results = max(1, min(max_results, 50))
+        me = get_client().me
         try:
-            result = await user.messages.get(
+            result = await me.messages.get(
                 request_configuration=RequestConfiguration(
                     query_parameters=MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
                         search=f'"{query}"',
@@ -106,8 +108,9 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
             _validate_datetime(end_datetime, "end_datetime")
             filter_parts.append(f"receivedDateTime le {end_datetime}")
 
+        me = get_client().me
         try:
-            result = await user.mail_folders.by_mail_folder_id(folder).messages.get(
+            result = await me.mail_folders.by_mail_folder_id(folder).messages.get(
                 request_configuration=RequestConfiguration(
                     query_parameters=FolderMessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
                         top=max_results,
@@ -128,8 +131,9 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
         Args:
             email_id: The unique message ID returned by search_emails or list_emails.
         """
+        me = get_client().me
         try:
-            message = await user.messages.by_message_id(email_id).get()
+            message = await me.messages.by_message_id(email_id).get()
         except APIError as exc:
             raise RuntimeError(f"Graph API error: {exc.message}") from exc
 
@@ -137,3 +141,4 @@ def register_mail_tools(mcp: FastMCP, client: GraphServiceClient, user_id: str) 
             raise RuntimeError(f"Email not found: {email_id!r}")
 
         return _to_dict(message)
+

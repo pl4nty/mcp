@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 
 from kiota_abstractions.api_error import APIError
 from kiota_abstractions.base_request_configuration import RequestConfiguration
@@ -41,11 +42,9 @@ def _validate_datetime(value: str, param_name: str) -> None:
 
 
 def register_calendar_tools(
-    mcp: FastMCP, client: GraphServiceClient, user_id: str
+    mcp: FastMCP, get_client: Callable[[], GraphServiceClient]
 ) -> None:
     """Register all calendar-related MCP tools on *mcp*."""
-
-    user = client.users.by_user_id(user_id)
 
     @mcp.tool()
     async def list_calendar_events(
@@ -70,8 +69,9 @@ def register_calendar_tools(
             _validate_datetime(end_datetime, "end_datetime")
             filter_parts.append(f"end/dateTime le '{end_datetime}'")
 
+        me = get_client().me
         try:
-            result = await user.events.get(
+            result = await me.events.get(
                 request_configuration=RequestConfiguration(
                     query_parameters=EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
                         top=max_results,
@@ -98,8 +98,9 @@ def register_calendar_tools(
         """
         max_results = max(1, min(max_results, 50))
 
+        me = get_client().me
         try:
-            result = await user.events.get(
+            result = await me.events.get(
                 request_configuration=RequestConfiguration(
                     query_parameters=EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
                         search=f'"{query}"',
@@ -111,3 +112,4 @@ def register_calendar_tools(
             raise RuntimeError(f"Graph API error: {exc.message}") from exc
 
         return [_to_dict(e) for e in (result.value or [])]
+
