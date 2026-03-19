@@ -2,17 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir uv
+COPY pyproject.toml main.py ./
+COPY tools/ tools/
 
-COPY pyproject.toml .
-COPY server.py .
-COPY outlook/ outlook/
-
-RUN uv pip install --system --no-cache -e .
+RUN pip install --no-cache-dir uv && uv pip install --system --no-cache -e .
 
 ENV HOST=0.0.0.0
 ENV PORT=8000
-
 EXPOSE 8000
 
-CMD ["python", "server.py"]
+CMD ["python", "main.py"]

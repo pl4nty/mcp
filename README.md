@@ -4,36 +4,39 @@ Remote MCP server for Microsoft 365 built with the [MCP Python SDK](https://gith
 
 ## Structure
 
-```
+```text
 mcp-servers/
 ├── Dockerfile
 ├── pyproject.toml
 ├── README.md
-├── server.py          # FastMCP server with OAuth 2.1 + DCR
-└── outlook/
-    ├── mail.py        # search_emails, list_emails, read_email
-    └── calendar.py    # list_calendar_events, search_calendar_events
+├── main.py        # FastMCP server, Entra auth, OAuth proxy
+└── tools/
+    ├── graph.py       # Microsoft Graph (Outlook email & calendar)
+    └── google_maps.py # Google Maps Routes API
 ```
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `search_emails` | Free-text search over the user's mailbox |
-| `list_emails` | List emails from a folder with optional unread and date-range filters |
-| `read_email` | Read the full content of a specific email by ID |
-| `list_calendar_events` | List calendar events with optional date-range filter |
-| `search_calendar_events` | Search calendar events by subject or body text |
+|Tool|Description|
+|---|---|
+|`search_emails`|Free-text search over the user's mailbox|
+|`list_emails`|List emails from a folder with optional unread and date-range filters|
+|`read_email`|Read the full content of a specific email by ID|
+|`list_calendar_events`|List calendar events with optional date-range filter|
+|`search_calendar_events`|Search calendar events by subject or body text|
+|`compute_route`|Compute a route between natural-language origin/destination with optional departure or arrival time|
 
 ## Configuration
 
-Register an application in [Microsoft Entra ID](https://portal.azure.com) with **delegated** permissions `Mail.Read` and `Calendars.Read`. Set the redirect URI to `{SERVER_URL}/auth/callback`.
+Register an application in [Microsoft Entra ID](https://portal.azure.com) and grant **delegated** Microsoft Graph permissions `Mail.Read` and `Calendars.Read`.
+
+This server is an MCP Resource Server and uses Entra as the external Authorization Server. It validates incoming bearer tokens against Entra JWKS, then uses `OnBehalfOfCredential` to call Microsoft Graph.
 
 ```env
-ENTRA_TENANT_ID=common        # or your specific tenant ID
-ENTRA_CLIENT_ID=<app-client-id>
-ENTRA_CLIENT_SECRET=<app-client-secret>
-SERVER_URL=https://your-server.example.com
+AZURE_TENANT_ID=common           # or your specific tenant ID
+AZURE_CLIENT_ID=<app-client-id>
+AZURE_CLIENT_SECRET=<app-client-secret>
+GOOGLE_MAPS_API_KEY=<your-key>   # optional, for compute_route tool
 ```
 
 Using `common` as the tenant ID supports both personal Microsoft accounts and work/school accounts.
@@ -43,10 +46,9 @@ Using `common` as the tenant ID supports both personal Microsoft accounts and wo
 ```bash
 docker build -t mcp-servers .
 docker run -p 8000:8000 \
-  -e ENTRA_TENANT_ID=common \
-  -e ENTRA_CLIENT_ID=... \
-  -e ENTRA_CLIENT_SECRET=... \
-  -e SERVER_URL=https://your-server.example.com \
+  -e AZURE_TENANT_ID=common \
+  -e AZURE_CLIENT_ID=... \
+  -e AZURE_CLIENT_SECRET=... \
   mcp-servers
 ```
 
@@ -54,5 +56,5 @@ docker run -p 8000:8000 \
 
 1. Go to **Claude** → **Settings** → **Connectors** → **Add custom connector**
 2. Enter `https://your-server.example.com/mcp`
-3. Claude registers via DCR and redirects you to sign in with your Microsoft account
-4. After signing in, Claude uses your delegated token to call Graph API as `/me`
+3. Configure OAuth against your Entra app (no DCR required)
+4. Claude sends bearer tokens to this MCP server, which exchanges them on-behalf-of the user for Graph calls
