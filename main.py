@@ -8,9 +8,9 @@ from contextvars import ContextVar
 import httpx
 import jwt
 import uvicorn
-from azure.identity.aio import OnBehalfOfCredential
+# from azure.identity.aio import OnBehalfOfCredential
 from dotenv import load_dotenv
-from msgraph_beta import GraphServiceClient
+# from msgraph_beta import GraphServiceClient
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -84,19 +84,19 @@ mcp = FastMCP(
 )
 
 
-def _graph_client() -> GraphServiceClient:
-    assertion = _user_assertion.get()
-    if not assertion:
-        raise RuntimeError("No authenticated user token available")
-    return GraphServiceClient(
-        credentials=OnBehalfOfCredential(
-            tenant_id=_user_tenant.get() or AZURE_TENANT_ID,
-            client_id=AZURE_CLIENT_ID,
-            client_secret=AZURE_CLIENT_SECRET,
-            user_assertion=assertion,
-        ),
-        scopes=["https://graph.microsoft.com/.default"],
-    )
+# def _graph_client() -> GraphServiceClient:
+#     assertion = _user_assertion.get()
+#     if not assertion:
+#         raise RuntimeError("No authenticated user token available")
+#     return GraphServiceClient(
+#         credentials=OnBehalfOfCredential(
+#             tenant_id=_user_tenant.get() or AZURE_TENANT_ID,
+#             client_id=AZURE_CLIENT_ID,
+#             client_secret=AZURE_CLIENT_SECRET,
+#             user_assertion=assertion,
+#         ),
+#         scopes=["https://graph.microsoft.com/.default"],
+#     )
 
 
 # Using third-party servers for these

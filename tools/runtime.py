@@ -20,4 +20,4 @@ def _resolve_main_module():
 
 _main = _resolve_main_module()
 mcp = _main.mcp
-graph_client = _main._graph_client
+# graph_client = _main._graph_client
