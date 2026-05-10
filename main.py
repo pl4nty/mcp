@@ -101,6 +101,7 @@ def _graph_client() -> GraphServiceClient:
 
 import tools.graph  # noqa: E402, F401 — registers @mcp.tool() on import
 import tools.google_maps  # noqa: E402, F401
+import tools.flowsavvy  # noqa: E402, F401
 
 
 _PROXY_SCOPE = f"api://{AZURE_CLIENT_ID}/claudeai"

@@ -12,7 +12,8 @@ mcp-servers/
 ├── main.py        # FastMCP server, Entra auth, OAuth proxy
 └── tools/
     ├── graph.py       # Microsoft Graph (Outlook email & calendar)
-    └── google_maps.py # Google Maps Routes API
+    ├── google_maps.py # Google Maps Routes API
+    └── flowsavvy.py   # FlowSavvy task management
 ```
 
 ## Tools
@@ -25,6 +26,8 @@ mcp-servers/
 |`list_calendar_events`|List calendar events with optional date-range filter|
 |`search_calendar_events`|Search calendar events by subject or body text|
 |`compute_route`|Compute a route between natural-language origin/destination with optional departure or arrival time|
+|`list_flowsavvy_tasks`|List all tasks and events from FlowSavvy schedule|
+|`create_flowsavvy_task`|Create a new task in FlowSavvy|
 
 ## Configuration
 
@@ -37,6 +40,7 @@ AZURE_TENANT_ID=common           # or your specific tenant ID
 AZURE_CLIENT_ID=<app-client-id>
 AZURE_CLIENT_SECRET=<app-client-secret>
 GOOGLE_MAPS_API_KEY=<your-key>   # optional, for compute_route tool
+FLOWSAVVY_COOKIE=<cookie-value>  # optional, Identity.Cookie value for FlowSavvy tools
 ```
 
 Using `common` as the tenant ID supports both personal Microsoft accounts and work/school accounts.
