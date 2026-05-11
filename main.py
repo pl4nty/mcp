@@ -72,12 +72,12 @@ class EntraTokenVerifier(TokenVerifier):
 mcp = FastMCP(
     name="Outlook MCP",
     instructions="Tools for reading Outlook emails and calendar events via Microsoft Graph.",
-    token_verifier=EntraTokenVerifier(),
-    auth=AuthSettings(
-        issuer_url=AnyHttpUrl(ENTRA_URL),
-        resource_server_url=None,
-        required_scopes=None,
-    ),
+    # token_verifier=EntraTokenVerifier(),
+    # auth=AuthSettings(
+    #     issuer_url=AnyHttpUrl(ENTRA_URL),
+    #     resource_server_url=None,
+    #     required_scopes=None,
+    # ),
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
     )
