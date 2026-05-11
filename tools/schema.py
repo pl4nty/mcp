@@ -26,7 +26,7 @@ _SCHEMAS: dict[str, dict] = {
     },
     "chromium-extensions": {
         "type": "json",
-        "description": "Chromium browser ExtensionSettings policy JSON schema (source: https://source.chromium.org/chromium/chromium/src/+/main:out/win-Debug/gen/components/policy/proto/chrome_settings.proto)",
+        "description": "Chromium browser ExtensionSettings policy JSON schema (derived from https://source.chromium.org/chromium/chromium/src/+/main:out/win-Debug/gen/components/policy/proto/chrome_settings.proto)",
         "path": _DATA_DIR / "chromium_extensions.json",
         "source": "https://source.chromium.org/chromium/chromium/src/+/main:out/win-Debug/gen/components/policy/proto/chrome_settings.proto",
     },
@@ -64,7 +64,7 @@ async def validate(content: str, schema_id: str) -> dict:
         A ValidationResult with 'valid' (bool) and 'errors' (list of strings).
     """
     if schema_id not in _SCHEMAS:
-        return {"valid": False, "errors": [f"Unknown schema_id: {schema_id}. Use list_schemas() to see available schemas."]}
+        return {"valid": False, "errors": [f"Unknown schema id: {schema_id}. Use list_schemas() to see available schemas."]}
 
     schema_info = _SCHEMAS[schema_id]
     errors: list[str] = []
@@ -103,15 +103,15 @@ async def list_schemas() -> list[dict]:
 
 
 @mcp.tool()
-async def get_schema(id: str) -> str:
+async def get_schema(schema_id: str) -> str:
     """Get the raw schema content by its identifier.
 
     Args:
-        id: The schema identifier (use list_schemas to see available IDs).
+        schema_id: The schema identifier (use list_schemas to see available IDs).
 
     Returns:
         The raw schema text (XSD XML or JSON).
     """
-    if id not in _SCHEMAS:
-        return f"Unknown schema id: {id}. Use list_schemas() to see available schemas."
-    return _SCHEMAS[id]["path"].read_text(encoding="utf-8")
+    if schema_id not in _SCHEMAS:
+        return f"Unknown schema id: {schema_id}. Use list_schemas() to see available schemas."
+    return _SCHEMAS[schema_id]["path"].read_text(encoding="utf-8")
