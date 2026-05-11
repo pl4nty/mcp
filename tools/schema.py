@@ -1,8 +1,10 @@
-"""Schema validation tools — validate XML/JSON against bundled schemas."""
+"""Schema validation tools — validate XML/JSON against bundled or URL-sourced schemas."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlparse, unquote
 
+import httpx
 import jsonschema
 from lxml import etree
 
@@ -10,46 +12,67 @@ from tools.runtime import mcp
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-# Schema registry: id → {type, description, path, source}
+# Schema registry: id → {description, url | path}
+# 'url'  — fetch schema content from this URL at runtime
+# 'path' — read schema content from this local file
 _SCHEMAS: dict[str, dict] = {
     "admx": {
-        "type": "xsd",
         "description": "ADMX/ADML Group Policy policy definition files schema",
-        "path": _DATA_DIR / "PolicyDefinitionFiles.xsd",
-        "source": "https://raw.githubusercontent.com/pl4nty/admxgen/refs/heads/master/admxgen/PolicyDefinitionFiles.xsd",
+        "url": "https://raw.githubusercontent.com/pl4nty/admxgen/refs/heads/master/admxgen/PolicyDefinitionFiles.xsd",
     },
     "assigned-access": {
-        "type": "xsd",
         "description": "Windows Assigned Access configuration schema",
-        "path": _DATA_DIR / "AssignedAccess.xsd",
-        "source": "https://raw.githubusercontent.com/MostlyCompliantEndpoint/Mostly-Compliant-Endpoint/refs/heads/main/Assigned%20Access%20Designer/Source/AssignedAccessDesigner/Assets/AssignedAccess.xsd",
+        "url": "https://raw.githubusercontent.com/MostlyCompliantEndpoint/Mostly-Compliant-Endpoint/refs/heads/main/Assigned%20Access%20Designer/Source/AssignedAccessDesigner/Assets/AssignedAccess.xsd",
     },
     "chromium-extensions": {
-        "type": "json",
         "description": "Chromium browser ExtensionSettings policy JSON schema (derived from https://source.chromium.org/chromium/chromium/src/+/main:out/win-Debug/gen/components/policy/proto/chrome_settings.proto)",
         "path": _DATA_DIR / "chromium_extensions.json",
-        "source": "https://source.chromium.org/chromium/chromium/src/+/main:out/win-Debug/gen/components/policy/proto/chrome_settings.proto",
     },
 }
 
-# Caches
+# Runtime content caches
+_content_cache: dict[str, str] = {}
 _xsd_cache: dict[str, etree.XMLSchema] = {}
-_json_cache: dict[str, dict] = {}
+_json_schema_cache: dict[str, dict] = {}
 
 
-def _get_xsd(schema_id: str) -> etree.XMLSchema:
+def _schema_type(schema_id: str) -> str:
+    """Determine schema type from the file extension of the url or path."""
+    info = _SCHEMAS[schema_id]
+    if "url" in info:
+        suffix = PurePosixPath(unquote(urlparse(info["url"]).path)).suffix.lower()
+    else:
+        suffix = info["path"].suffix.lower()
+    return "xsd" if suffix == ".xsd" else "json"
+
+
+async def _fetch_content(schema_id: str) -> str:
+    """Return raw schema text, fetching from URL or reading from disk."""
+    if schema_id not in _content_cache:
+        info = _SCHEMAS[schema_id]
+        if "url" in info:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(info["url"])
+                resp.raise_for_status()
+                _content_cache[schema_id] = resp.text
+        else:
+            _content_cache[schema_id] = info["path"].read_text(encoding="utf-8")
+    return _content_cache[schema_id]
+
+
+async def _get_xsd(schema_id: str) -> etree.XMLSchema:
     if schema_id not in _xsd_cache:
-        path = _SCHEMAS[schema_id]["path"]
-        doc = etree.parse(str(path))
+        text = await _fetch_content(schema_id)
+        doc = etree.fromstring(text.encode("utf-8"))
         _xsd_cache[schema_id] = etree.XMLSchema(doc)
     return _xsd_cache[schema_id]
 
 
-def _get_json_schema(schema_id: str) -> dict:
-    if schema_id not in _json_cache:
-        path = _SCHEMAS[schema_id]["path"]
-        _json_cache[schema_id] = json.loads(path.read_text(encoding="utf-8"))
-    return _json_cache[schema_id]
+async def _get_json_schema(schema_id: str) -> dict:
+    if schema_id not in _json_schema_cache:
+        text = await _fetch_content(schema_id)
+        _json_schema_cache[schema_id] = json.loads(text)
+    return _json_schema_cache[schema_id]
 
 
 @mcp.tool()
@@ -66,21 +89,20 @@ async def validate(content: str, schema_id: str) -> dict:
     if schema_id not in _SCHEMAS:
         return {"valid": False, "errors": [f"Unknown schema id: {schema_id}. Use list_schemas() to see available schemas."]}
 
-    schema_info = _SCHEMAS[schema_id]
     errors: list[str] = []
 
-    if schema_info["type"] == "xsd":
+    if _schema_type(schema_id) == "xsd":
         try:
-            xsd = _get_xsd(schema_id)
+            xsd = await _get_xsd(schema_id)
             doc = etree.fromstring(content.encode("utf-8"))
             if not xsd.validate(doc):
                 errors = [str(e) for e in xsd.error_log]
         except etree.XMLSyntaxError as exc:
             errors = [f"XML parse error: {exc}"]
-    elif schema_info["type"] == "json":
+    else:
         try:
             instance = json.loads(content)
-            schema = _get_json_schema(schema_id)
+            schema = await _get_json_schema(schema_id)
             validator = jsonschema.Draft7Validator(schema)
             errors = [e.message for e in validator.iter_errors(instance)]
         except json.JSONDecodeError as exc:
@@ -97,7 +119,7 @@ async def list_schemas() -> list[dict]:
         A list of schema descriptors with 'id', 'type', and 'description'.
     """
     return [
-        {"id": sid, "type": info["type"], "description": info["description"]}
+        {"id": sid, "type": _schema_type(sid), "description": info["description"]}
         for sid, info in _SCHEMAS.items()
     ]
 
@@ -114,4 +136,4 @@ async def get_schema(schema_id: str) -> str:
     """
     if schema_id not in _SCHEMAS:
         return f"Unknown schema id: {schema_id}. Use list_schemas() to see available schemas."
-    return _SCHEMAS[schema_id]["path"].read_text(encoding="utf-8")
+    return await _fetch_content(schema_id)
