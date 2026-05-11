@@ -26,20 +26,49 @@ async def list_flowsavvy_tasks() -> list[dict]:
         resp.raise_for_status()
         data = resp.json()
 
-    items = data if isinstance(data, list) else data.get("items", data.get("Items", [data]))
+    if isinstance(data, list):
+        items = data
+    elif isinstance(data, dict):
+        schedule = data.get("scheduleResponse", data)
+        if isinstance(schedule, dict):
+            schedule_items = schedule.get("scheduleItems", [])
+            all_day_events = schedule.get("allDayEvents", [])
+            if isinstance(schedule_items, list) or isinstance(all_day_events, list):
+                items = []
+                if isinstance(schedule_items, list):
+                    items.extend(schedule_items)
+                if isinstance(all_day_events, list):
+                    items.extend(all_day_events)
+            else:
+                items = schedule.get("items", schedule.get("Items", [schedule]))
+        else:
+            items = [schedule]
+    else:
+        items = [data]
+
     results = []
     for item in items:
         if not isinstance(item, dict):
             continue
+        source = item.get("Item") if isinstance(item.get("Item"), dict) else item
         entry = {
-            k: item[k]
+            k: source[k]
             for k in (
                 "id", "Title", "ItemType", "DueDateTime", "StartDateTime",
                 "EndDateTime", "Notes", "priority", "FixedTime", "AllDay",
-                "taskListId", "calendarId",
+                "taskListId",
             )
-            if k in item
+            if k in source
         }
+        if "calendarId" in source:
+            entry["calendarId"] = source["calendarId"]
+        elif "CalendarID" in source:
+            entry["calendarId"] = source["CalendarID"]
+        if "id" not in entry:
+            if "id" in item:
+                entry["id"] = item["id"]
+            elif "ItemID" in item:
+                entry["id"] = item["ItemID"]
         if entry:
             results.append(entry)
     return results
