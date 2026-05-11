@@ -35,6 +35,15 @@ _content_cache: dict[str, str] = {}
 _xsd_cache: dict[str, etree.XMLSchema] = {}
 _json_schema_cache: dict[str, dict] = {}
 
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient()
+    return _http_client
+
 
 def _schema_type(schema_id: str) -> str:
     """Determine schema type from the file extension of the url or path."""
@@ -51,10 +60,14 @@ async def _fetch_content(schema_id: str) -> str:
     if schema_id not in _content_cache:
         info = _SCHEMAS[schema_id]
         if "url" in info:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(info["url"])
+            try:
+                resp = await _get_http_client().get(info["url"])
                 resp.raise_for_status()
-                _content_cache[schema_id] = resp.text
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(
+                    f"Failed to fetch schema '{schema_id}' from {info['url']}: HTTP {exc.response.status_code}"
+                ) from exc
+            _content_cache[schema_id] = resp.text
         else:
             _content_cache[schema_id] = info["path"].read_text(encoding="utf-8")
     return _content_cache[schema_id]
