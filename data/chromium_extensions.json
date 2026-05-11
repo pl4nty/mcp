@@ -1,0 +1,157 @@
+{
+    "patternProperties": {
+        "^[a-p]{32}(?:,[a-p]{32})*,?$": {
+            "properties": {
+                "allowed_permissions": {
+                    "id": "ListOfPermissions",
+                    "items": {
+                        "pattern": "^[a-z][a-zA-Z0-9._]*$",
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "blocked_install_message": {
+                    "description": "text that will be displayed to the user in the chrome webstore if installation is blocked.",
+                    "type": "string"
+                },
+                "blocked_permissions": {
+                    "items": {
+                        "pattern": "^[a-z][a-zA-Z0-9._]*$",
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "file_url_navigation_allowed": {
+                    "type": "boolean"
+                },
+                "installation_mode": {
+                    "enum": [
+                        "blocked",
+                        "allowed",
+                        "force_installed",
+                        "normal_installed",
+                        "removed"
+                    ],
+                    "type": "string"
+                },
+                "minimum_version_required": {
+                    "pattern": "^[0-9]+([.][0-9]+)*$",
+                    "type": "string"
+                },
+                "override_update_url": {
+                    "type": "boolean"
+                },
+                "runtime_allowed_hosts": {
+                    "id": "ListOfUrlPatterns",
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "runtime_blocked_hosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "toolbar_pin": {
+                    "enum": [
+                        "force_pinned",
+                        "default_unpinned",
+                        "default_pinned"
+                    ],
+                    "type": "string"
+                },
+                "update_url": {
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        },
+        "^update_url:": {
+            "properties": {
+                "allowed_permissions": {
+                    "items": {
+                        "pattern": "^[a-z][a-zA-Z0-9._]*$",
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "blocked_permissions": {
+                    "items": {
+                        "pattern": "^[a-z][a-zA-Z0-9._]*$",
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "installation_mode": {
+                    "enum": [
+                        "blocked",
+                        "allowed",
+                        "removed"
+                    ],
+                    "type": "string"
+                }
+            },
+            "type": "object"
+        }
+    },
+    "properties": {
+        "*": {
+            "properties": {
+                "allowed_types": {
+                    "items": {
+                        "enum": [
+                            "extension",
+                            "theme",
+                            "user_script",
+                            "hosted_app",
+                            "legacy_packaged_app",
+                            "platform_app"
+                        ],
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "blocked_install_message": {
+                    "type": "string"
+                },
+                "blocked_permissions": {
+                    "items": {
+                        "pattern": "^[a-z][a-zA-Z0-9._]*$",
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "install_sources": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "installation_mode": {
+                    "enum": [
+                        "blocked",
+                        "allowed",
+                        "removed"
+                    ],
+                    "type": "string"
+                },
+                "runtime_allowed_hosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                },
+                "runtime_blocked_hosts": {
+                    "items": {
+                        "type": "string"
+                    },
+                    "type": "array"
+                }
+            },
+            "type": "object"
+        }
+    },
+    "type": "object"
+}
