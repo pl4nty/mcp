@@ -59,14 +59,15 @@ def _extract_item(item: dict) -> dict:
         for k in (
             "id", "Title", "ItemType", "DueDateTime", "StartDateTime",
             "EndDateTime", "Notes", "priority", "FixedTime", "AllDay",
-            "taskListId", "IsCompleted",
+            "taskListId", "Completed",
         )
         if k in source
     }
-    if "calendarId" in source:
-        entry["calendarId"] = source["calendarId"]
-    elif "CalendarID" in source:
+    # CalendarID uses different casing in schedule vs other responses
+    if "CalendarID" in source:
         entry["calendarId"] = source["CalendarID"]
+    elif "calendarId" in source:
+        entry["calendarId"] = source["calendarId"]
     if "id" not in entry:
         for key in ("id", "ItemID", "newItemId"):
             if key in item:
@@ -190,6 +191,13 @@ async def _build_item_form(
 import asyncio
 
 
+async def _fetch_schedule(client: httpx.AsyncClient) -> list[dict]:
+    """Return all items from the current scheduled window."""
+    resp = await client.get(f"{_BASE}/Schedule/GetSchedule")
+    resp.raise_for_status()
+    return _parse_schedule_response(resp.json())
+
+
 @mcp.tool()
 async def get_flowsavvy_schedule(
     start_date: Optional[str] = None,
@@ -198,53 +206,42 @@ async def get_flowsavvy_schedule(
     """Get tasks and events from FlowSavvy schedule.
 
     Args:
-        start_date: Optional start date filter in ISO format (e.g. "2026-06-01").
-        end_date: Optional end date filter in ISO format (e.g. "2026-06-30").
+        start_date: Start date in ISO format (e.g. "2026-06-01"). Defaults to current week.
+        end_date: End date in ISO format (e.g. "2026-06-30").
     """
     params = {}
     if start_date:
-        params["startDate"] = start_date
+        params["start"] = start_date
     if end_date:
-        params["endDate"] = end_date
+        params["end"] = end_date
 
     async with _client() as client:
         resp = await client.get(f"{_BASE}/Schedule/GetSchedule", params=params)
         resp.raise_for_status()
-        data = resp.json()
-
-    return _parse_schedule_response(data)
+        return _parse_schedule_response(resp.json())
 
 
 @mcp.tool()
 async def list_flowsavvy_items() -> list[dict]:
-    """List all tasks and events from FlowSavvy (to-do list view)."""
+    """List all currently scheduled tasks and events from FlowSavvy."""
     async with _client() as client:
-        resp = await client.post(f"{_BASE}/item/search")
-        resp.raise_for_status()
-        data = resp.json()
-
-    if isinstance(data, list):
-        return [_extract_item(i) for i in data if isinstance(i, dict)]
-
-    # Unwrap searchResponse wrapper
-    if isinstance(data, dict):
-        sr = data.get("searchResponse", {})
-        items = sr.get("items") or []
-        return [_extract_item(i) for i in items if isinstance(i, dict)]
-    return []
+        return await _fetch_schedule(client)
 
 
 @mcp.tool()
 async def get_flowsavvy_item(item_id: int) -> dict:
-    """Get details of a single FlowSavvy item by ID.
+    """Get details of a single FlowSavvy item by ID from the current schedule.
 
     Args:
         item_id: The numeric ID of the task or event.
     """
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/Item/Get", params={"id": item_id})
-        resp.raise_for_status()
-        return resp.json()
+        items = await _fetch_schedule(client)
+
+    found = [i for i in items if i.get("id") == item_id]
+    if not found:
+        raise ValueError(f"Item {item_id} not found in current schedule")
+    return found[0]
 
 
 @mcp.tool()
