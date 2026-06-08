@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from typing import Optional
 
 import httpx
@@ -15,9 +16,40 @@ _BASE = "https://my.flowsavvy.app/api"
 def _client() -> httpx.AsyncClient:
     if not FLOWSAVVY_COOKIE:
         raise RuntimeError("FLOWSAVVY_COOKIE environment variable is not set")
-    return httpx.AsyncClient(
-        cookies={"Identity.Cookie": FLOWSAVVY_COOKIE},
+    jar = httpx.Cookies()
+    jar.set("Identity.Cookie", FLOWSAVVY_COOKIE, domain="my.flowsavvy.app")
+    return httpx.AsyncClient(cookies=jar)
+
+
+async def _get_antiforgery_token(client: httpx.AsyncClient) -> str:
+    """Fetch the ASP.NET Core anti-forgery token required for all POST requests."""
+    resp = await client.get(f"{_BASE}/Schedule/AntiForgeryToken")
+    resp.raise_for_status()
+    m = re.search(r'value="([^"]+)"', resp.text)
+    if not m:
+        raise RuntimeError("Could not parse anti-forgery token from response")
+    return m.group(1)
+
+
+async def _get_defaults(client: httpx.AsyncClient) -> dict:
+    """Fetch the default task list ID, calendar ID, and time profile ID."""
+    tl_resp, tp_resp = await asyncio.gather(
+        client.get(f"{_BASE}/TaskList/Get"),
+        client.get(f"{_BASE}/TimeProfile/Get"),
     )
+    tl_resp.raise_for_status()
+    tp_resp.raise_for_status()
+    tl = tl_resp.json()
+    tp = tp_resp.json()
+    default_list_id = tl["defaultTaskListId"]
+    default_cal_id = next(
+        t["calendarId"] for t in tl["taskLists"] if t["id"] == default_list_id
+    )
+    return {
+        "task_list_id": default_list_id,
+        "calendar_id": default_cal_id,
+        "time_profile_id": tp["defaultTimeProfileId"],
+    }
 
 
 def _extract_item(item: dict) -> dict:
@@ -36,10 +68,10 @@ def _extract_item(item: dict) -> dict:
     elif "CalendarID" in source:
         entry["calendarId"] = source["CalendarID"]
     if "id" not in entry:
-        if "id" in item:
-            entry["id"] = item["id"]
-        elif "ItemID" in item:
-            entry["id"] = item["ItemID"]
+        for key in ("id", "ItemID", "newItemId"):
+            if key in item:
+                entry["id"] = item[key]
+                break
     return entry
 
 
@@ -74,7 +106,9 @@ def _parse_schedule_response(data) -> list[dict]:
     return results
 
 
-def _build_item_form(
+async def _build_item_form(
+    client: httpx.AsyncClient,
+    aft: str,
     title: str,
     item_type: str,
     due_date_time: str,
@@ -94,6 +128,16 @@ def _build_item_form(
     busy: bool = True,
     save_type: str = "all",
 ) -> dict:
+    # For tasks, IDs of 0 are invalid — auto-fetch the account defaults.
+    if item_type == "task" and (task_list_id == 0 or time_profile_id == 0):
+        defaults = await _get_defaults(client)
+        if task_list_id == 0:
+            task_list_id = defaults["task_list_id"]
+        if calendar_id == 0:
+            calendar_id = defaults["calendar_id"]
+        if time_profile_id == 0:
+            time_profile_id = defaults["time_profile_id"]
+
     return {
         "id": str(item_id),
         "InstanceID": str(instance_id),
@@ -139,7 +183,11 @@ def _build_item_form(
         "timeProfileId": str(time_profile_id),
         "Location": location,
         "saveType": save_type,
+        "__RequestVerificationToken": aft,
     }
+
+
+import asyncio
 
 
 @mcp.tool()
@@ -177,7 +225,13 @@ async def list_flowsavvy_items() -> list[dict]:
 
     if isinstance(data, list):
         return [_extract_item(i) for i in data if isinstance(i, dict)]
-    return _parse_schedule_response(data)
+
+    # Unwrap searchResponse wrapper
+    if isinstance(data, dict):
+        sr = data.get("searchResponse", {})
+        items = sr.get("items") or []
+        return [_extract_item(i) for i in items if isinstance(i, dict)]
+    return []
 
 
 @mcp.tool()
@@ -190,16 +244,12 @@ async def get_flowsavvy_item(item_id: int) -> dict:
     async with _client() as client:
         resp = await client.get(f"{_BASE}/Item/Get", params={"id": item_id})
         resp.raise_for_status()
-        data = resp.json()
-
-    if isinstance(data, dict):
-        return _extract_item(data)
-    return data
+        return resp.json()
 
 
 @mcp.tool()
 async def list_flowsavvy_calendars() -> list[dict]:
-    """List all calendars available in FlowSavvy."""
+    """List all calendars and connected calendar accounts in FlowSavvy."""
     async with _client() as client:
         resp = await client.get(f"{_BASE}/Calendar/Info")
         resp.raise_for_status()
@@ -247,33 +297,29 @@ async def create_flowsavvy_task(
         end_date_time: Scheduled end date/time (e.g. "2026-05-10T15:00").
         notes: HTML notes for the task.
         priority: Priority level (1 = default).
-        task_list_id: FlowSavvy task list ID.
-        calendar_id: FlowSavvy calendar ID.
-        time_profile_id: FlowSavvy time profile ID.
+        task_list_id: FlowSavvy task list ID (0 = use account default).
+        calendar_id: FlowSavvy calendar ID (0 = use account default).
+        time_profile_id: FlowSavvy time profile ID (0 = use account default).
         fixed_time: Whether the task is fixed to its scheduled time.
         all_day: Whether this is an all-day task.
     """
-    form_data = _build_item_form(
-        title=title,
-        item_type="task",
-        due_date_time=due_date_time,
-        start_date_time=start_date_time,
-        end_date_time=end_date_time,
-        notes=notes,
-        priority=priority,
-        task_list_id=task_list_id,
-        calendar_id=calendar_id,
-        time_profile_id=time_profile_id,
-        fixed_time=fixed_time,
-        all_day=all_day,
-    )
-
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
+        form_data = await _build_item_form(
+            client=client, aft=aft,
+            title=title, item_type="task",
+            due_date_time=due_date_time,
+            start_date_time=start_date_time,
+            end_date_time=end_date_time,
+            notes=notes, priority=priority,
+            task_list_id=task_list_id,
+            calendar_id=calendar_id,
+            time_profile_id=time_profile_id,
+            fixed_time=fixed_time, all_day=all_day,
+        )
         resp = await client.post(f"{_BASE}/Item/Create", data=form_data)
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else data
+        return resp.json()
 
 
 @mcp.tool()
@@ -295,32 +341,27 @@ async def create_flowsavvy_event(
         start_date_time: Event start date/time in ISO format (e.g. "2026-06-10T14:00").
         end_date_time: Event end date/time in ISO format (e.g. "2026-06-10T15:00").
         notes: HTML notes for the event.
-        calendar_id: FlowSavvy calendar ID.
+        calendar_id: FlowSavvy calendar ID (0 = use account default).
         fixed_time: Whether the event is at a fixed time (default True for events).
         all_day: Whether this is an all-day event.
         location: Optional location string.
         busy: Whether to mark the time as busy.
     """
-    form_data = _build_item_form(
-        title=title,
-        item_type="event",
-        due_date_time=end_date_time,
-        start_date_time=start_date_time,
-        end_date_time=end_date_time,
-        notes=notes,
-        calendar_id=calendar_id,
-        fixed_time=fixed_time,
-        all_day=all_day,
-        location=location,
-        busy=busy,
-    )
-
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
+        form_data = await _build_item_form(
+            client=client, aft=aft,
+            title=title, item_type="event",
+            due_date_time=end_date_time,
+            start_date_time=start_date_time,
+            end_date_time=end_date_time,
+            notes=notes, calendar_id=calendar_id,
+            fixed_time=fixed_time, all_day=all_day,
+            location=location, busy=busy,
+        )
         resp = await client.post(f"{_BASE}/Item/Create", data=form_data)
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else data
+        return resp.json()
 
 
 @mcp.tool()
@@ -350,38 +391,33 @@ async def update_flowsavvy_task(
         end_date_time: Scheduled end date/time (e.g. "2026-05-10T15:00").
         notes: HTML notes for the task.
         priority: Priority level (1 = default).
-        task_list_id: FlowSavvy task list ID.
-        calendar_id: FlowSavvy calendar ID.
-        time_profile_id: FlowSavvy time profile ID.
+        task_list_id: FlowSavvy task list ID (0 = use account default).
+        calendar_id: FlowSavvy calendar ID (0 = use account default).
+        time_profile_id: FlowSavvy time profile ID (0 = use account default).
         fixed_time: Whether the task is fixed to its scheduled time.
         all_day: Whether this is an all-day task.
         instance_id: Instance ID for repeating tasks (0 for non-repeating).
         save_type: How to save repeating tasks — "all", "this", or "thisAndFuture".
     """
-    form_data = _build_item_form(
-        title=title,
-        item_type="task",
-        due_date_time=due_date_time,
-        start_date_time=start_date_time,
-        end_date_time=end_date_time,
-        notes=notes,
-        priority=priority,
-        task_list_id=task_list_id,
-        calendar_id=calendar_id,
-        time_profile_id=time_profile_id,
-        fixed_time=fixed_time,
-        all_day=all_day,
-        item_id=item_id,
-        instance_id=instance_id,
-        save_type=save_type,
-    )
-
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
+        form_data = await _build_item_form(
+            client=client, aft=aft,
+            title=title, item_type="task",
+            due_date_time=due_date_time,
+            start_date_time=start_date_time,
+            end_date_time=end_date_time,
+            notes=notes, priority=priority,
+            task_list_id=task_list_id,
+            calendar_id=calendar_id,
+            time_profile_id=time_profile_id,
+            fixed_time=fixed_time, all_day=all_day,
+            item_id=item_id, instance_id=instance_id,
+            save_type=save_type,
+        )
         resp = await client.post(f"{_BASE}/Item/Edit", data=form_data)
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else data
+        return resp.json()
 
 
 @mcp.tool()
@@ -407,7 +443,7 @@ async def update_flowsavvy_event(
         start_date_time: Event start date/time in ISO format (e.g. "2026-06-10T14:00").
         end_date_time: Event end date/time in ISO format (e.g. "2026-06-10T15:00").
         notes: HTML notes for the event.
-        calendar_id: FlowSavvy calendar ID.
+        calendar_id: FlowSavvy calendar ID (0 = use account default).
         fixed_time: Whether the event is at a fixed time.
         all_day: Whether this is an all-day event.
         location: Optional location string.
@@ -415,29 +451,23 @@ async def update_flowsavvy_event(
         instance_id: Instance ID for repeating events (0 for non-repeating).
         save_type: How to save repeating events — "all", "this", or "thisAndFuture".
     """
-    form_data = _build_item_form(
-        title=title,
-        item_type="event",
-        due_date_time=end_date_time,
-        start_date_time=start_date_time,
-        end_date_time=end_date_time,
-        notes=notes,
-        calendar_id=calendar_id,
-        fixed_time=fixed_time,
-        all_day=all_day,
-        location=location,
-        busy=busy,
-        item_id=item_id,
-        instance_id=instance_id,
-        save_type=save_type,
-    )
-
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
+        form_data = await _build_item_form(
+            client=client, aft=aft,
+            title=title, item_type="event",
+            due_date_time=end_date_time,
+            start_date_time=start_date_time,
+            end_date_time=end_date_time,
+            notes=notes, calendar_id=calendar_id,
+            fixed_time=fixed_time, all_day=all_day,
+            location=location, busy=busy,
+            item_id=item_id, instance_id=instance_id,
+            save_type=save_type,
+        )
         resp = await client.post(f"{_BASE}/Item/Edit", data=form_data)
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else data
+        return resp.json()
 
 
 @mcp.tool()
@@ -450,17 +480,17 @@ async def complete_flowsavvy_task(item_id: int, instance_id: int = 0) -> dict:
     """
     serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
         resp = await client.post(
             f"{_BASE}/Item/ChangeTaskCompleteStatus",
             data={
                 "serializedItemIdToInstanceIdsDict": serialized,
                 "platform": "web",
+                "__RequestVerificationToken": aft,
             },
         )
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else {"id": item_id, "status": "completed"}
+        return resp.json()
 
 
 @mcp.tool()
@@ -473,17 +503,17 @@ async def uncomplete_flowsavvy_task(item_id: int, instance_id: int = 0) -> dict:
     """
     serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
         resp = await client.post(
             f"{_BASE}/Item/ChangeTaskCompleteStatus",
             data={
                 "serializedItemIdToInstanceIdsDict": serialized,
                 "platform": "web",
+                "__RequestVerificationToken": aft,
             },
         )
         resp.raise_for_status()
-        data = resp.json()
-
-    return _extract_item(data) if isinstance(data, dict) else {"id": item_id, "status": "incomplete"}
+        return resp.json()
 
 
 @mcp.tool()
@@ -501,18 +531,17 @@ async def delete_flowsavvy_item(
     """
     serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
         resp = await client.post(
             f"{_BASE}/Item/MultipleDelete",
             data={
                 "serializedItemIdToInstanceIdsDict": serialized,
                 "deleteType": delete_type,
+                "__RequestVerificationToken": aft,
             },
         )
         resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {"id": item_id, "deleted": True}
+        return resp.json()
 
 
 @mcp.tool()
@@ -526,14 +555,14 @@ async def recalculate_flowsavvy(
         force: Force recalculation even if not needed.
         reschedule_past_tasks: Whether to reschedule tasks with past start times.
     """
-    form_data: dict = {"force": str(force).lower()}
-    if reschedule_past_tasks is not None:
-        form_data["reschedulePastTasks"] = str(reschedule_past_tasks).lower()
-
     async with _client() as client:
+        aft = await _get_antiforgery_token(client)
+        form_data: dict = {
+            "force": str(force).lower(),
+            "__RequestVerificationToken": aft,
+        }
+        if reschedule_past_tasks is not None:
+            form_data["reschedulePastTasks"] = str(reschedule_past_tasks).lower()
         resp = await client.post(f"{_BASE}/Schedule/Recalculate", data=form_data)
         resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {"status": "recalculated"}
+        return resp.json()
