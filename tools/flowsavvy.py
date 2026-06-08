@@ -1,5 +1,6 @@
 """FlowSavvy tools — task and event management."""
 
+import json
 import os
 from typing import Optional
 
@@ -87,13 +88,15 @@ def _build_item_form(
     fixed_time: bool = False,
     all_day: bool = False,
     item_id: int = 0,
+    instance_id: int = 0,
     dont_start_until: str = "0001-01-01T00:00",
     location: str = "",
     busy: bool = True,
+    save_type: str = "all",
 ) -> dict:
     return {
         "id": str(item_id),
-        "InstanceID": "0",
+        "InstanceID": str(instance_id),
         "Notes": notes,
         "DueDateTime": due_date_time,
         "StartDateTime": start_date_time,
@@ -135,6 +138,7 @@ def _build_item_form(
         "calendarId": str(calendar_id),
         "timeProfileId": str(time_profile_id),
         "Location": location,
+        "saveType": save_type,
     }
 
 
@@ -164,20 +168,10 @@ async def get_flowsavvy_schedule(
 
 
 @mcp.tool()
-async def list_flowsavvy_items(
-    item_type: Optional[str] = None,
-) -> list[dict]:
-    """List items (tasks and/or events) from FlowSavvy.
-
-    Args:
-        item_type: Optional filter — "task" or "event". Omit for all items.
-    """
-    params = {}
-    if item_type:
-        params["itemType"] = item_type
-
+async def list_flowsavvy_items() -> list[dict]:
+    """List all tasks and events from FlowSavvy (to-do list view)."""
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/Item/GetItems", params=params)
+        resp = await client.post(f"{_BASE}/item/search")
         resp.raise_for_status()
         data = resp.json()
 
@@ -194,7 +188,7 @@ async def get_flowsavvy_item(item_id: int) -> dict:
         item_id: The numeric ID of the task or event.
     """
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/Item/GetItem", params={"id": item_id})
+        resp = await client.get(f"{_BASE}/Item/Get", params={"id": item_id})
         resp.raise_for_status()
         data = resp.json()
 
@@ -207,7 +201,7 @@ async def get_flowsavvy_item(item_id: int) -> dict:
 async def list_flowsavvy_calendars() -> list[dict]:
     """List all calendars available in FlowSavvy."""
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/Calendar/GetCalendars")
+        resp = await client.get(f"{_BASE}/Calendar/Info")
         resp.raise_for_status()
         return resp.json()
 
@@ -216,7 +210,7 @@ async def list_flowsavvy_calendars() -> list[dict]:
 async def list_flowsavvy_lists() -> list[dict]:
     """List all task lists in FlowSavvy."""
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/TaskList/GetLists")
+        resp = await client.get(f"{_BASE}/TaskList/Get")
         resp.raise_for_status()
         return resp.json()
 
@@ -225,7 +219,7 @@ async def list_flowsavvy_lists() -> list[dict]:
 async def list_flowsavvy_scheduling_hours() -> list[dict]:
     """List all scheduling hour profiles (time profiles) in FlowSavvy."""
     async with _client() as client:
-        resp = await client.get(f"{_BASE}/TimeProfile/GetTimeProfiles")
+        resp = await client.get(f"{_BASE}/TimeProfile/Get")
         resp.raise_for_status()
         return resp.json()
 
@@ -343,6 +337,8 @@ async def update_flowsavvy_task(
     time_profile_id: int = 0,
     fixed_time: bool = False,
     all_day: bool = False,
+    instance_id: int = 0,
+    save_type: str = "all",
 ) -> dict:
     """Update an existing task in FlowSavvy.
 
@@ -359,6 +355,8 @@ async def update_flowsavvy_task(
         time_profile_id: FlowSavvy time profile ID.
         fixed_time: Whether the task is fixed to its scheduled time.
         all_day: Whether this is an all-day task.
+        instance_id: Instance ID for repeating tasks (0 for non-repeating).
+        save_type: How to save repeating tasks — "all", "this", or "thisAndFuture".
     """
     form_data = _build_item_form(
         title=title,
@@ -374,10 +372,12 @@ async def update_flowsavvy_task(
         fixed_time=fixed_time,
         all_day=all_day,
         item_id=item_id,
+        instance_id=instance_id,
+        save_type=save_type,
     )
 
     async with _client() as client:
-        resp = await client.post(f"{_BASE}/Item/Update", data=form_data)
+        resp = await client.post(f"{_BASE}/Item/Edit", data=form_data)
         resp.raise_for_status()
         data = resp.json()
 
@@ -396,6 +396,8 @@ async def update_flowsavvy_event(
     all_day: bool = False,
     location: str = "",
     busy: bool = True,
+    instance_id: int = 0,
+    save_type: str = "all",
 ) -> dict:
     """Update an existing event in FlowSavvy.
 
@@ -410,6 +412,8 @@ async def update_flowsavvy_event(
         all_day: Whether this is an all-day event.
         location: Optional location string.
         busy: Whether to mark the time as busy.
+        instance_id: Instance ID for repeating events (0 for non-repeating).
+        save_type: How to save repeating events — "all", "this", or "thisAndFuture".
     """
     form_data = _build_item_form(
         title=title,
@@ -424,10 +428,12 @@ async def update_flowsavvy_event(
         location=location,
         busy=busy,
         item_id=item_id,
+        instance_id=instance_id,
+        save_type=save_type,
     )
 
     async with _client() as client:
-        resp = await client.post(f"{_BASE}/Item/Update", data=form_data)
+        resp = await client.post(f"{_BASE}/Item/Edit", data=form_data)
         resp.raise_for_status()
         data = resp.json()
 
@@ -435,16 +441,21 @@ async def update_flowsavvy_event(
 
 
 @mcp.tool()
-async def complete_flowsavvy_task(item_id: int) -> dict:
+async def complete_flowsavvy_task(item_id: int, instance_id: int = 0) -> dict:
     """Mark a FlowSavvy task as complete.
 
     Args:
         item_id: The numeric ID of the task to complete.
+        instance_id: Instance ID for repeating tasks (0 for non-repeating).
     """
+    serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
         resp = await client.post(
-            f"{_BASE}/Item/Complete",
-            data={"id": str(item_id)},
+            f"{_BASE}/Item/ChangeTaskCompleteStatus",
+            data={
+                "serializedItemIdToInstanceIdsDict": serialized,
+                "platform": "web",
+            },
         )
         resp.raise_for_status()
         data = resp.json()
@@ -453,16 +464,21 @@ async def complete_flowsavvy_task(item_id: int) -> dict:
 
 
 @mcp.tool()
-async def uncomplete_flowsavvy_task(item_id: int) -> dict:
+async def uncomplete_flowsavvy_task(item_id: int, instance_id: int = 0) -> dict:
     """Mark a FlowSavvy task as incomplete (reopen it).
 
     Args:
         item_id: The numeric ID of the task to reopen.
+        instance_id: Instance ID for repeating tasks (0 for non-repeating).
     """
+    serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
         resp = await client.post(
-            f"{_BASE}/Item/Uncomplete",
-            data={"id": str(item_id)},
+            f"{_BASE}/Item/ChangeTaskCompleteStatus",
+            data={
+                "serializedItemIdToInstanceIdsDict": serialized,
+                "platform": "web",
+            },
         )
         resp.raise_for_status()
         data = resp.json()
@@ -471,16 +487,26 @@ async def uncomplete_flowsavvy_task(item_id: int) -> dict:
 
 
 @mcp.tool()
-async def delete_flowsavvy_item(item_id: int) -> dict:
+async def delete_flowsavvy_item(
+    item_id: int,
+    instance_id: int = 0,
+    delete_type: str = "deleteThis",
+) -> dict:
     """Delete a task or event from FlowSavvy.
 
     Args:
         item_id: The numeric ID of the item to delete.
+        instance_id: Instance ID for repeating items (0 for non-repeating).
+        delete_type: "deleteThis" to delete only this instance, "deleteAll" to delete all instances.
     """
+    serialized = json.dumps({str(item_id): [instance_id]})
     async with _client() as client:
         resp = await client.post(
-            f"{_BASE}/Item/Delete",
-            data={"id": str(item_id)},
+            f"{_BASE}/Item/MultipleDelete",
+            data={
+                "serializedItemIdToInstanceIdsDict": serialized,
+                "deleteType": delete_type,
+            },
         )
         resp.raise_for_status()
         try:
@@ -490,10 +516,22 @@ async def delete_flowsavvy_item(item_id: int) -> dict:
 
 
 @mcp.tool()
-async def recalculate_flowsavvy() -> dict:
-    """Trigger FlowSavvy to recalculate and reschedule all tasks."""
+async def recalculate_flowsavvy(
+    force: bool = False,
+    reschedule_past_tasks: Optional[bool] = None,
+) -> dict:
+    """Trigger FlowSavvy to recalculate and reschedule all tasks.
+
+    Args:
+        force: Force recalculation even if not needed.
+        reschedule_past_tasks: Whether to reschedule tasks with past start times.
+    """
+    form_data: dict = {"force": str(force).lower()}
+    if reschedule_past_tasks is not None:
+        form_data["reschedulePastTasks"] = str(reschedule_past_tasks).lower()
+
     async with _client() as client:
-        resp = await client.post(f"{_BASE}/Schedule/Recalculate")
+        resp = await client.post(f"{_BASE}/Schedule/Recalculate", data=form_data)
         resp.raise_for_status()
         try:
             return resp.json()
